@@ -8,6 +8,11 @@ import datetime as dt
 import logging
 import uuid
 from urllib.parse import parse_qs, urlparse
+from base64 import b64decode, b64encode
+from Cryptodome.PublicKey import RSA
+from Cryptodome.Cipher import PKCS1_v1_5
+from Cryptodome.Util.number import bytes_to_long
+
 
 import pytz
 import requests
@@ -173,30 +178,22 @@ class KiaUvoApiEU(ApiImplType1):
                 + "&state=$service_id:$user_id"
             )
 
+    
     def login(self, username: str, password: str) -> Token:
         stamp = self._get_stamp()
         device_id = self._get_device_id(stamp)
-        cookies = self._get_cookies()
-        self._set_session_language(cookies)
-        authorization_code = None
         try:
-            authorization_code = self._get_authorization_code_with_redirect_url(
-                username, password, cookies
-            )
-        except Exception:
-            _LOGGER.debug(f"{DOMAIN} - get_authorization_code_with_redirect_url failed")
-            authorization_code = self._get_authorization_code_with_form(
-                username, password, cookies
-            )
+            authorization_code = self._get_authorization_code_oauth2(username, password)
+        except Exception as e:
+            raise AuthenticationError(f"Login failed: {e}")
 
-        if authorization_code is None:
+        if not authorization_code:
             raise AuthenticationError("Login Failed")
 
         _, access_token, authorization_code, expires_in = self._get_access_token(
             stamp, authorization_code
         )
         valid_until = dt.datetime.now(pytz.utc) + dt.timedelta(seconds=expires_in)
-
         _, refresh_token = self._get_refresh_token(stamp, authorization_code)
 
         return Token(
@@ -1251,3 +1248,55 @@ class KiaUvoApiEU(ApiImplType1):
         token_type = response["token_type"]
         refresh_token = token_type + " " + response["access_token"]
         return token_type, refresh_token
+    def _get_authorization_code_oauth2(self, username, password) -> str:
+        cert_resp = requests.get("https://idpconnect-eu.kia.com/auth/api/v1/accounts/certs")
+        cert_json = cert_resp.json()
+        key_data = cert_json["retValue"]
+        modulus = key_data["n"]
+        exponent = key_data["e"]
+        kid = key_data["kid"]
+
+        enc_password = self._encrypt_password(password, modulus, exponent)
+
+        data = {
+            "client_id": "b7cbfdee-c669-4df4-9583-9cd9e6c62cd8",
+            "encryptedPassword": "true",
+            "password": enc_password,
+            "kid": kid,
+            "redirect_uri": "https://prd.eu-ccapi.kia.com:8080/api/v1/user/oauth2/redirect",
+            "response_type": "code",
+            "scope": "",
+            "state": "ccsp",
+            "username": username,
+            "remember_me": "false",
+            "connector_session_key": str(uuid.uuid4())
+        }
+
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": USER_AGENT_MOZILLA
+        }
+
+        login_resp = requests.post(
+            "https://idpconnect-eu.kia.com/auth/account/signin",
+            data=data,
+            headers=headers,
+            allow_redirects=False
+        )
+
+        if login_resp.status_code != 302:
+            raise AuthenticationError("Invalid credentials or unexpected response")
+
+        location = login_resp.headers.get("location", "")
+        parsed_url = urlparse(location)
+        code = parse_qs(parsed_url.query).get("code", [None])[0]
+        return code
+
+    def _encrypt_password(self, password, n_b64, e_b64="AQAB") -> str:
+        n = int.from_bytes(b64decode(n_b64 + '=='), byteorder='big')
+        e = int.from_bytes(b64decode(e_b64 + '=='), byteorder='big')
+        rsa_key = RSA.construct((n, e))
+        cipher = PKCS1_v1_5.new(rsa_key)
+        encrypted = cipher.encrypt(password.encode("utf-8"))
+        return b64encode(encrypted).decode("utf-8")
+
