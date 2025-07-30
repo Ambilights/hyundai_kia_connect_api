@@ -1,0 +1,9 @@
+{
+  "domain": "hyundai_kia_connect_api",
+  "name": "Hyundai Kia Connect API (Patched)",
+  "version": "1.0.0",
+  "documentation": "https://github.com/Ambilights/hyundai_kia_connect_api",
+  "dependencies": [],
+  "codeowners": ["@Ambilights"],
+  "requirements": []
+}
