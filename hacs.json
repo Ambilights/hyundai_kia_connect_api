@@ -1,0 +1,7 @@
+{
+  "name": "Hyundai Kia Connect API (Patched)",
+  "content_in_root": false,
+  "domains": [],
+  "country": "any",
+  "homeassistant": "2023.12.0"
+}
